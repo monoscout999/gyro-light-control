@@ -20,10 +20,14 @@ NO HACE:
 - ❌ Matemáticas complejas
 - ❌ Comunicación de red
 
-DEPENDENCIAS: Ninguna (Python stdlib only)
+DEPENDENCIAS: schemas (para Vector3D)
 """
 
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, TYPE_CHECKING
+
+# Import condicional para evitar circular imports
+if TYPE_CHECKING:
+    from schemas import Vector3D
 
 
 class VenueManager:
@@ -297,6 +301,73 @@ class VenueManager:
                 'bounds': self.get_bounds()
             }
         }
+    
+    # ========================================================================
+    # MÉTODOS VECTOR3D (Integración con SpatialProcessor)
+    # ========================================================================
+    
+    def get_user_position_v3d(self) -> "Vector3D":
+        """
+        Retorna posición del usuario como Vector3D.
+        
+        Para uso con SpatialProcessor.
+        """
+        from schemas import Vector3D
+        pos = self.get_user_position()
+        return Vector3D(x=pos[0], y=pos[1], z=pos[2])
+    
+    def get_bounds_v3d(self) -> tuple["Vector3D", "Vector3D"]:
+        """
+        Retorna bounds como tupla de Vector3D (min, max).
+        
+        Para uso con SpatialProcessor.
+        """
+        from schemas import Vector3D
+        bounds = self.get_bounds()
+        return (
+            Vector3D(x=bounds['min'][0], y=bounds['min'][1], z=bounds['min'][2]),
+            Vector3D(x=bounds['max'][0], y=bounds['max'][1], z=bounds['max'][2])
+        )
+    
+    def get_back_wall_center_v3d(self) -> "Vector3D":
+        """
+        Retorna centro de pared trasera como Vector3D.
+        
+        Para uso como target de calibración en SpatialProcessor.
+        """
+        from schemas import Vector3D
+        pos = self.get_back_wall_center()
+        return Vector3D(x=pos[0], y=pos[1], z=pos[2])
+    
+    def get_calibration_target_direction(self) -> "Vector3D":
+        """
+        Calcula vector direccional hacia el centro de la pared trasera.
+        
+        Este es el vector TARGET para calibración (hacia donde debería
+        apuntar el dispositivo cuando el usuario mira al frente).
+        
+        Returns:
+            Vector3D normalizado hacia la pared trasera
+        """
+        from schemas import Vector3D
+        import numpy as np
+        
+        user = self.get_user_position()
+        target = self.get_back_wall_center()
+        
+        # Vector desde usuario hacia target
+        direction = np.array([
+            target[0] - user[0],
+            target[1] - user[1],
+            target[2] - user[2]
+        ])
+        
+        # Normalizar
+        length = np.linalg.norm(direction)
+        if length > 0:
+            direction = direction / length
+        
+        return Vector3D(x=float(direction[0]), y=float(direction[1]), z=float(direction[2]))
 
 
 # ============================================================================

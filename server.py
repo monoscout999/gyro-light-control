@@ -3,22 +3,25 @@ Server Module - Gyro Light Control Visualizer
 ==============================================
 
 MÓDULO: server
-VERSIÓN: 1.0
+VERSIÓN: 2.0
 ESTADO: [EN_DESARROLLO]
 
 RESPONSABILIDAD:
-Servidor principal que integra todos los módulos backend.
+Servidor principal que ORQUESTA los módulos backend.
+
+ARQUITECTURA PRODUCTOR-CONSUMIDOR:
+- SpatialProcessor: Productor (transforma SensorData → InteractionResult)
+- VenueManager: Estado del venue (Single Source of Truth)
+- WebSocketHandler: I/O de red
 
 INTEGRA:
-- math_engine.py [VALIDADO]
+- schemas.py [VALIDADO]
+- spatial_processor.py [VALIDADO]
 - venue_manager.py [VALIDADO]
 - websocket_handler.py
 
 DEPENDENCIAS:
-- FastAPI
-- uvicorn
-- numpy
-- qrcode
+- FastAPI, uvicorn, qrcode
 """
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -26,19 +29,14 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from contextlib import asynccontextmanager
 import asyncio
-import numpy as np
 import logging
 import socket
 import qrcode
 from typing import Optional, Dict, Any
 
-# Importar módulos propios
-from math_engine import (
-    euler_to_direction,
-    create_calibration_offset,
-    apply_calibration,
-    ray_box_intersection
-)
+# Módulos propios - Arquitectura Producer-Consumer
+from schemas import SensorData, Vector3D, InteractionResult
+from spatial_processor import SpatialProcessor
 from venue_manager import VenueManager
 from websocket_handler import WebSocketHandler
 
@@ -55,28 +53,36 @@ class AppState:
     """
     Estado global de la aplicación.
     
-    Centraliza todos los managers y estado de calibración.
+    Orquesta los agentes del sistema:
+    - SpatialProcessor: El Productor (lógica matemática)
+    - VenueManager: Estado del espacio 3D
+    - WebSocketHandler: Comunicación de red
     """
     
     def __init__(self):
-        # Managers
+        # Estado del venue (Single Source of Truth)
         self.venue = VenueManager()
+        
+        # Productor de datos espaciales
+        self.processor = SpatialProcessor()
+        
+        # Handler de WebSocket
         self.websocket = WebSocketHandler(buffer_size=3)
         
-        # Estado de calibración (SCALAR YAW OFFSET)
-        self.is_calibrated = False
-        self.alpha_offset = 0.0
-        
-        # Último estado conocido
+        # Último estado conocido (para debugging/status)
         self.last_pointer_position: Optional[tuple] = None
         self.last_sensor_data: Optional[dict] = None
         
-        logger.info("AppState initialized")
+        logger.info("AppState initialized (Producer-Consumer Architecture)")
+    
+    @property
+    def is_calibrated(self) -> bool:
+        """Delega al SpatialProcessor."""
+        return self.processor.is_calibrated
     
     def reset_calibration(self):
-        """Resetea la calibración."""
-        self.is_calibrated = False
-        self.alpha_offset = 0.0
+        """Resetea la calibración delegando al SpatialProcessor."""
+        self.processor.reset_calibration()
         logger.info("Calibration reset")
 
 
@@ -108,96 +114,86 @@ app = FastAPI(
 # LÓGICA DE PROCESAMIENTO
 # ============================================================================
 
-def process_sensor_data(sensor_data: Dict) -> Optional[Dict]:
+def process_sensor_data(raw_data: Dict) -> Optional[Dict]:
     """
-    Procesa datos del sensor y actualiza todo el sistema.
+    Procesa datos del sensor delegando al SpatialProcessor.
     
     Args:
-        sensor_data: Dict con alpha, beta, gamma
+        raw_data: Dict con alpha, beta, gamma, timestamp
         
     Returns:
         Dict con estado completo para broadcast o None si hay error
         
-    Pipeline:
-    1. Aplicar offset al Alpha (Calibración Scalar)
-    2. Convertir euler → vector direccional
-    3. Calcular intersección con venue
-    4. Retornar estado completo
+    Pipeline (delegado a SpatialProcessor):
+    1. Validar input con Pydantic (SensorData)
+    2. Aplicar calibración matricial (si existe)
+    3. Convertir euler → vector direccional  
+    4. Calcular intersección con venue
+    5. Retornar estado para broadcast
     """
     try:
-        raw_alpha = sensor_data['alpha']
-        beta = sensor_data['beta']
-        gamma = sensor_data['gamma']
-        
-        # 1. Aplicar Calibración (Scalar Offset)
-        # alpha_final = (alpha_raw - offset)
-        alpha = raw_alpha
-        if app_state.is_calibrated:
-            alpha = raw_alpha - app_state.alpha_offset
-            # Normalizar a 0-360
-            alpha = alpha % 360
-        
-        # 2. Convertir a vector direccional (Usando alpha calibrado)
-        direction_vector = euler_to_direction(alpha, beta, gamma)
-        
-        # NOTA: Ya no usamos apply_calibration(matrix)
-        
-        # 3. Calcular intersección con venue
-        user_position = np.array(app_state.venue.get_user_position())
-        bounds = app_state.venue.get_bounds()
-        box_min = np.array(bounds['min'])
-        box_max = np.array(bounds['max'])
-        
-        intersection = ray_box_intersection(
-            origin=user_position,
-            direction=direction_vector,
-            box_min=box_min,
-            box_max=box_max
+        # 1. Validar input con Pydantic schema
+        sensor = SensorData(
+            alpha=raw_data.get('alpha', 0),
+            beta=raw_data.get('beta', 0),
+            gamma=raw_data.get('gamma', 0),
+            timestamp=raw_data.get('timestamp')
         )
         
-        if intersection is None:
-            logger.warning("Ray does not intersect venue")
+        # 2. Obtener contexto del venue
+        user_pos = app_state.venue.get_user_position_v3d()
+        bounds_min, bounds_max = app_state.venue.get_bounds_v3d()
+        
+        # 3. Delegar al Productor (SpatialProcessor)
+        result = app_state.processor.process(
+            sensor=sensor,
+            user_position=user_pos,
+            bounds_min=bounds_min,
+            bounds_max=bounds_max
+        )
+        
+        if result is None:
+            logger.debug("Ray does not intersect venue")
             return None
         
-        # Guardar estado
-        app_state.last_pointer_position = tuple(intersection)
-        app_state.last_sensor_data = sensor_data
+        # 4. Guardar estado para debugging
+        app_state.last_pointer_position = result.intersection.to_list()
+        app_state.last_sensor_data = raw_data
         
-        # 4. Construir estado para broadcast
-        state = {
-            'type': 'state_update',
-            'sensor': sensor_data,
-            'pointer': {
-                'direction': direction_vector.tolist(),
-                'intersection': intersection.tolist()
-            },
-            'calibrated': app_state.is_calibrated
-        }
-        
-        return state
+        # 5. Retornar formato de broadcast
+        return result.to_broadcast_dict()
         
     except Exception as e:
         logger.error(f"Error processing sensor data: {e}", exc_info=True)
         return None
 
 
-def perform_calibration(sensor_data: Dict) -> bool:
+def perform_calibration(raw_data: Dict) -> bool:
     """
-    Realiza calibración del sistema (Scalar Offset).
+    Realiza calibración del sistema usando calibración matricial.
     
-    Guarda el Alpha actual como el "Nuevo Norte".
+    Usa Rodrigues' formula para alinear el vector actual del sensor
+    con la dirección hacia el centro de la pared trasera.
     """
     try:
-        current_alpha = sensor_data['alpha']
+        # Validar input
+        sensor = SensorData(
+            alpha=raw_data.get('alpha', 0),
+            beta=raw_data.get('beta', 0),
+            gamma=raw_data.get('gamma', 0)
+        )
         
-        # Guardar offset
-        app_state.alpha_offset = current_alpha
-        app_state.is_calibrated = True
+        # Obtener dirección target (hacia pared trasera)
+        target_direction = app_state.venue.get_calibration_target_direction()
         
-        logger.info(f"✅ Calibration successful (Scalar Offset)")
-        logger.info(f"   Alpha Offset set to: {app_state.alpha_offset}")
+        # Delegar calibración al SpatialProcessor
+        success = app_state.processor.calibrate(sensor, target_direction)
         
-        return True
+        if success:
+            logger.info("✅ Calibration successful (Matrix/Rodrigues)")
+            logger.info(f"   Target direction: {target_direction}")
+        
+        return success
         
     except Exception as e:
         logger.error(f"Calibration failed: {e}", exc_info=True)
@@ -316,12 +312,16 @@ async def get_status():
     """Retorna estado del sistema."""
     return {
         'status': 'running',
+        'architecture': 'producer-consumer',
         'venue': app_state.venue.to_dict(),
         'websocket': app_state.websocket.get_stats(),
-        'calibration': {
-            'is_calibrated': app_state.is_calibrated,
-            'last_sensor': app_state.last_sensor_data,
-            'last_pointer': app_state.last_pointer_position
+        'processor': {
+            'is_calibrated': app_state.processor.is_calibrated,
+            'calibration_type': 'matrix' if app_state.processor.is_calibrated else 'none'
+        },
+        'last_state': {
+            'sensor': app_state.last_sensor_data,
+            'pointer': app_state.last_pointer_position
         }
     }
 
