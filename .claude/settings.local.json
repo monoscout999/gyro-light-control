@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python server.py:*)",
+      "Bash(python server_fixed.py:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

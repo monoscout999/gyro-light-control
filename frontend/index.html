@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gyro Light Control - Visualizer</title>
+
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- Three.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Outfit', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace'],
+                    },
+                    colors: {
+                        glass: 'rgba(255, 255, 255, 0.05)',
+                        'glass-border': 'rgba(255, 255, 255, 0.1)',
+                    }
+                }
+            }
+        }
+    </script>
+
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background: #0a0a0b;
+            color: #f8fafc;
+        }
+
+        #scene-container {
+            width: 100%;
+            height: 100vh;
+        }
+
+        .glass-panel {
+            background: rgba(15, 15, 20, 0.7);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+        }
+
+        .glass-card {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            transition: all 0.3s ease;
+        }
+
+        .glass-card:hover {
+            background: rgba(255, 255, 255, 0.05);
+            border-color: rgba(255, 255, 255, 0.1);
+        }
+
+        /* Custom range slider */
+        input[type="range"] {
+            -webkit-appearance: none;
+            width: 100%;
+            height: 4px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 2px;
+            outline: none;
+        }
+
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 12px;
+            height: 12px;
+            background: #3b82f6;
+            border-radius: 50%;
+            cursor: pointer;
+            box-shadow: 0 0 10px rgba(59, 130, 246, 0.5);
+            transition: all 0.2s ease;
+        }
+
+        input[type="range"]::-webkit-slider-thumb:hover {
+            transform: scale(1.2);
+            background: #60a5fa;
+        }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar { width: 4px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.1); border-radius: 2px; }
+        ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.2); }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            box-shadow: 0 0 8px currentColor;
+        }
+    </style>
+</head>
+
+<body>
+    <!-- VIEWPORT 3D -->
+    <div id="scene-container" class="fixed inset-0 z-0"></div>
+
+    <!-- OVERLAY UI -->
+    <div class="fixed inset-0 pointer-events-none flex flex-col z-10 p-6">
+        
+        <!-- HEADER / TOOLBAR -->
+        <div class="flex justify-between items-start pointer-events-auto">
+            <div class="glass-panel rounded-2xl p-4 flex items-center gap-6">
+                <div>
+                    <h1 class="text-xl font-bold tracking-tight bg-gradient-to-r from-blue-400 to-indigo-400 bg-clip-text text-transparent">
+                        GYRO LIGHT CONTROL
+                    </h1>
+                    <p class="text-[10px] uppercase tracking-widest text-slate-500 font-semibold mt-0.5">3D Visualization Engine v2.0</p>
+                </div>
+                
+                <div class="h-8 w-[1px] bg-white/10"></div>
+                
+                <div class="flex gap-2">
+                    <button id="btn-calibrate" class="px-4 py-2 bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/30 text-blue-400 rounded-xl text-xs font-semibold transition-all">
+                        CALIBRATE
+                    </button>
+                    <button id="btn-reset" class="px-4 py-2 bg-slate-700/20 hover:bg-slate-700/30 border border-slate-500/30 text-slate-400 rounded-xl text-xs font-semibold transition-all">
+                        RESET SCENE
+                    </button>
+                </div>
+
+                <div class="h-8 w-[1px] bg-white/10"></div>
+
+                <div id="connection-status" class="flex items-center gap-3 pr-2">
+                    <div id="status-indicator" class="status-dot bg-rose-500 text-rose-500"></div>
+                    <span id="status-text" class="text-xs font-medium text-slate-400 uppercase tracking-tighter">Disconnected</span>
+                </div>
+            </div>
+
+            <div class="glass-panel rounded-2xl p-3 flex items-center gap-3">
+                <span class="text-[10px] font-mono text-slate-500">FPS</span>
+                <span id="fps-counter" class="text-sm font-mono font-bold text-blue-400">00</span>
+            </div>
+        </div>
+
+        <!-- MIDDLE CONTENT -->
+        <div class="flex-1 flex gap-6 my-6 overflow-hidden">
+            
+            <!-- LEFT SIDEBAR: SENSOR DATA -->
+            <div class="w-72 flex flex-col gap-6 pointer-events-auto overflow-hidden">
+                <div class="glass-panel rounded-3xl p-6 flex flex-col gap-6 overflow-y-auto">
+                    <h2 class="text-xs uppercase tracking-[0.2em] text-slate-400 font-bold">Sensor Analytics</h2>
+                    
+                    <!-- ALPHA -->
+                    <div class="glass-card rounded-2xl p-4 flex flex-col gap-3">
+                        <div class="flex justify-between items-center">
+                            <span class="text-[10px] text-slate-500 font-bold uppercase">Alpha (Yaw)</span>
+                            <span class="text-xs font-mono text-blue-400 font-bold"><span id="alpha-value">0.0</span>°</span>
+                        </div>
+                        <input type="range" id="alpha-slider" min="0" max="360" value="0" disabled>
+                    </div>
+
+                    <!-- BETA -->
+                    <div class="glass-card rounded-2xl p-4 flex flex-col gap-3">
+                        <div class="flex justify-between items-center">
+                            <span class="text-[10px] text-slate-500 font-bold uppercase">Beta (Pitch)</span>
+                            <span class="text-xs font-mono text-blue-400 font-bold"><span id="beta-value">0.0</span>°</span>
+                        </div>
+                        <input type="range" id="beta-slider" min="-180" max="180" value="0" disabled>
+                    </div>
+
+                    <!-- GAMMA -->
+                    <div class="glass-card rounded-2xl p-4 flex flex-col gap-3">
+                        <div class="flex justify-between items-center">
+                            <span class="text-[10px] text-slate-500 font-bold uppercase">Gamma (Roll)</span>
+                            <span class="text-xs font-mono text-blue-400 font-bold"><span id="gamma-value">0.0</span>°</span>
+                        </div>
+                        <input type="range" id="gamma-slider" min="-90" max="90" value="0" disabled>
+                    </div>
+
+                    <div class="h-[1px] w-full bg-white/5"></div>
+
+                    <h2 class="text-xs uppercase tracking-[0.2em] text-slate-400 font-bold">Debug Metrics</h2>
+                    
+                    <div class="space-y-4">
+                        <div class="flex flex-col gap-1">
+                            <span class="text-[10px] text-slate-500 uppercase font-bold">User Position</span>
+                            <span id="debug-user-pos" class="text-xs font-mono text-slate-300">(5.0, 5.0, 1.0)</span>
+                        </div>
+                        <div class="flex flex-col gap-1">
+                            <span class="text-[10px] text-slate-500 uppercase font-bold">Pointer Target</span>
+                            <span id="debug-pointer-pos" class="text-xs font-mono text-slate-300">(--, --, --)</span>
+                        </div>
+                        <div class="flex justify-between items-center">
+                            <span class="text-[10px] text-slate-500 uppercase font-bold">Network Latency</span>
+                            <span id="debug-latency" class="text-xs font-mono text-indigo-400">-- ms</span>
+                        </div>
+                        <div class="flex justify-between items-center">
+                            <span class="text-[10px] text-slate-500 uppercase font-bold">Calibrated</span>
+                            <span id="debug-calibrated" class="text-xs font-bold text-slate-300">NO</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="flex-1"></div>
+
+            <!-- RIGHT SIDEBAR: PROPERTIES -->
+            <div class="w-80 flex flex-col pointer-events-auto">
+                <div class="glass-panel rounded-3xl p-6 flex flex-col h-full overflow-hidden">
+                    <h2 class="text-xs uppercase tracking-[0.2em] text-slate-400 font-bold mb-6">Entity Explorer</h2>
+                    
+                    <div id="properties-content" class="flex-1 overflow-y-auto pr-2">
+                        <div class="flex flex-col items-center justify-center h-full text-center gap-4 opacity-40">
+                            <div class="w-12 h-12 rounded-full border border-dashed border-slate-500 flex items-center justify-center">
+                                <svg class="w-6 h-6 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 15l-2 5L9 9l11 4-5 2zm0 0l5 5M7.188 2.239l.777 2.897M5.136 7.965l-2.898-.777M13.95 4.05l-2.122 2.122m-5.657 5.656l-2.12 2.122"></path></svg>
+                            </div>
+                            <p class="text-slate-400 text-sm italic">Select an object in the viewport to inspect properties</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- BOTTOM PANEL: CONSOLE -->
+        <div class="h-48 glass-panel rounded-[2rem] p-6 flex flex-col gap-4 pointer-events-auto">
+            <div class="flex items-center justify-between">
+                <div class="flex items-center gap-3">
+                    <h2 class="text-xs uppercase tracking-[0.2em] text-slate-400 font-bold">System Log</h2>
+                    <div class="flex gap-1 h-4">
+                        <div class="w-1 h-full bg-blue-500/50 rounded-full animate-pulse"></div>
+                        <div class="w-1 h-full bg-blue-500/30 rounded-full animate-pulse capitalize" style="animation-delay: 0.2s"></div>
+                    </div>
+                </div>
+                
+                <div class="flex gap-2">
+                    <button id="filter-info" class="p-1 px-3 text-[10px] font-bold bg-blue-500/10 text-blue-400 border border-blue-500/20 rounded-lg hover:bg-blue-500/20 transition-all">INFO</button>
+                    <button id="filter-warn" class="p-1 px-3 text-[10px] font-bold bg-amber-500/10 text-amber-500 border border-amber-500/20 rounded-lg hover:bg-amber-500/20 transition-all">WARN</button>
+                    <button id="filter-error" class="p-1 px-3 text-[10px] font-bold bg-rose-500/10 text-rose-500 border border-rose-500/20 rounded-lg hover:bg-rose-500/20 transition-all">ERROR</button>
+                    <button id="console-clear" class="ml-2 p-1 px-3 text-[10px] font-bold bg-slate-700/30 text-slate-400 border border-slate-500/20 rounded-lg hover:bg-slate-700/50 transition-all italic">CLEAR</button>
+                </div>
+            </div>
+
+            <div id="console-output" class="flex-1 bg-black/20 rounded-2xl p-4 overflow-y-auto font-mono text-[11px] border border-white/5">
+                <!-- Log entries -->
+            </div>
+        </div>
+
+    </div>
+
+    <!-- SCRIPTS -->
+    <script src="js/websocket_client.js"></script>
+    <script src="js/scene3d.js"></script>
+    <script src="js/main.js"></script>
+
+</body>
+
+</html>
